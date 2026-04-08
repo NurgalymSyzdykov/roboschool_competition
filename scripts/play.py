@@ -85,12 +85,12 @@ def load_env(label, headless=False):
     Cfg.env.front_camera_depth_height_px = 424
     Cfg.env.front_camera_color_fov_h_deg = 70.0
     Cfg.env.front_camera_depth_fov_h_deg = 86.0
-    Cfg.env.front_camera_offset_xyz = [0.35, 0.0, 0.10]
-    Cfg.env.front_camera_pitch_deg = 0.0
+    Cfg.env.front_camera_offset_xyz = [0.315, 0.0, 0.052]
+    Cfg.env.front_camera_pitch_deg = -4.0
 
     from aliengo_gym.envs.wrappers.history_wrapper import HistoryWrapper
 
-    env = VelocityTrackingEasyEnv(sim_device='cuda:0', headless=headless, cfg=Cfg)
+    env = VelocityTrackingEasyEnv(seed=10, sim_device='cuda:0', headless=headless, cfg=Cfg)
     env = HistoryWrapper(env)
 
     # load policy

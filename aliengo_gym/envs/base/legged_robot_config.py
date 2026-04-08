@@ -35,8 +35,8 @@ class Cfg(PrefixProto, cli=False):
         num_recording_envs = 1
         front_camera_enabled = False
         front_camera_attach_body_name = "trunk"
-        front_camera_offset_xyz = [0.27, 0.0, 0.03]
-        front_camera_pitch_deg = 0.0
+        front_camera_offset_xyz = [0.315, 0.0, 0.052]
+        front_camera_pitch_deg = -4.0
         # Depth FOV target: 86 x 57 (H x V)
         front_camera_depth_width_px = 640
         front_camera_depth_height_px = 424

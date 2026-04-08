@@ -20,7 +20,7 @@ from .legged_robot_config import Cfg
 
 class LeggedRobot(BaseTask):
     def __init__(self, cfg: Cfg, sim_params, physics_engine, sim_device, headless, eval_cfg=None,
-                 initial_dynamics_dict=None):
+                 initial_dynamics_dict=None, seed=0):
         """ Parses the provided config file,
             calls create_sim() (which creates, simulation, terrain and environments),
             initilizes pytorch buffers used during training
@@ -40,6 +40,7 @@ class LeggedRobot(BaseTask):
         self.debug_viz = False
         self.init_done = False
         self.initial_dynamics_dict = initial_dynamics_dict
+        self.seed = int(seed)
         if eval_cfg is not None: self._parse_cfg(eval_cfg)
         self._parse_cfg(self.cfg)
 
@@ -1496,6 +1497,69 @@ class LeggedRobot(BaseTask):
         self.height_samples = torch.tensor(self.terrain.heightsamples).view(self.terrain.tot_rows,
                                                                             self.terrain.tot_cols).to(self.device)
 
+    def _generate_object_positions_from_heightfield(
+        self,
+        num_boxes,
+        obstacle_clearance_m=1.0,
+        object_spacing_m=3.0,
+    ):
+        rng = np.random.default_rng(self.seed)
+
+        hf = self.terrain.height_field_raw
+        h_scale = self.cfg.terrain.horizontal_scale
+
+        obstacle_clearance_cells = int(np.ceil(obstacle_clearance_m / h_scale))   # 1.0 / 0.1 = 10
+        object_spacing_cells = int(np.ceil(object_spacing_m / h_scale))           # 3.0 / 0.1 = 30
+
+        obstacle_cells = np.argwhere(hf != 0)
+        placed_cells = []
+
+        max_tries = 20000
+
+        n_rows, n_cols = hf.shape
+
+        for _ in range(max_tries):
+            if len(placed_cells) == num_boxes:
+                break
+
+            x_cell = int(rng.integers(0, n_rows))
+            y_cell = int(rng.integers(0, n_cols))
+
+            if hf[x_cell, y_cell] == 1:
+                continue
+
+            valid = True
+            if len(obstacle_cells) > 0:
+                dx = obstacle_cells[:, 0] - x_cell
+                dy = obstacle_cells[:, 1] - y_cell
+                dist2 = dx * dx + dy * dy
+                if np.any(dist2 < obstacle_clearance_cells * obstacle_clearance_cells):
+                    valid = False
+
+            if not valid:
+                continue
+
+            for px, py in placed_cells:
+                if (x_cell - px) ** 2 + (y_cell - py) ** 2 < object_spacing_cells * object_spacing_cells:
+                    valid = False
+                    break
+
+            if not valid:
+                continue
+
+            placed_cells.append((x_cell, y_cell))
+
+        if len(placed_cells) < num_boxes:
+            raise RuntimeError(
+                f"Could not place {num_boxes} objects with the requested clearances. "
+                f"Placed only {len(placed_cells)}."
+            )
+
+        x_boxes = [x * h_scale for x, _ in placed_cells]
+        y_boxes = [y * h_scale for _, y in placed_cells]
+
+        return x_boxes, y_boxes, placed_cells
+
     def _create_envs(self):
         """ Creates environments:
              1. loads the robot URDF/MJCF asset,
@@ -1643,6 +1707,22 @@ class LeggedRobot(BaseTask):
             photo_asset_options
         )
 
+        num_boxes = 5
+
+        x_boxes, y_boxes, placed_cells = self._generate_object_positions_from_heightfield(
+            num_boxes=num_boxes,
+            obstacle_clearance_m=1.0,
+            object_spacing_m=3.0,
+        )
+
+        print(f"[Object placement] seed={self.seed}")
+        for k in range(num_boxes):
+            print(
+                f"object {k}: "
+                f"cell=({placed_cells[k][0]}, {placed_cells[k][1]}), "
+                f"world=({x_boxes[k]:.2f}, {y_boxes[k]:.2f})"
+            )
+
         for i in range(self.num_envs):
             # create env instance
             env_handle = self.gym.create_env(self.sim, env_lower, env_upper, int(np.sqrt(self.num_envs)))
@@ -1719,27 +1799,8 @@ class LeggedRobot(BaseTask):
             self.envs.append(env_handle)
             self.actor_handles.append(anymal_handle)
 
-            num_boxes = 5
-            free_radius = 0.25
-
-            placed = []
-
-            x_boxes = [4.0, 10.5, 8.0, 1.0, 7.0]
-            y_boxes = [4.5, 6.0, 9.5, 2.0, 16.0]
-
             for b in range(num_boxes):
                 x, y = x_boxes[b], y_boxes[b]
-
-                valid = True
-                for px, py in placed:
-                    if (x - px)**2 + (y - py)**2 < (2 * free_radius)**2:
-                        valid = False
-                        break
-
-                if not valid:
-                    continue
-
-                placed.append((x, y))
 
                 pose = gymapi.Transform()
                 pose.p = gymapi.Vec3(x, y, 0.25)
