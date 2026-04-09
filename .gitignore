@@ -12,3 +12,4 @@ models/*
 *.jit
 runs/
 README.md
+.codex

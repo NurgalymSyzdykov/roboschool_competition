@@ -94,8 +94,9 @@ def update_cfg_from_args(env_cfg, cfg_train, args):
             cfg_train.runner.experiment_name = args.experiment_name
         if args.run_name is not None:
             cfg_train.runner.run_name = args.run_name
-        if args.load_run is not None:
-            cfg_train.runner.load_run = args.load_run
+        load_run = getattr(args, "load_run", None)
+        if load_run is not None:
+            cfg_train.runner.load_run = load_run
         if args.checkpoint is not None:
             cfg_train.runner.checkpoint = args.checkpoint
     return env_cfg, cfg_train
@@ -108,14 +109,11 @@ def get_args():
         {"name": "--vx", "type": float, "default": 0.0, "help": "Target forward speed."},
         {"name": "--vy", "type": float, "default": 0.0, "help": "Target lateral speed."},
         {"name": "--vw", "type": float, "default": 0.0, "help": "Target yaw rate."},
-        {"name": "--pitch", "type": float, "default": 0.0, "help": "Target body pitch."},
         {"name": "--steps", "type": int, "default": 1000, "help": "Steps for play/controller demos."},
         {"name": "--render_camera", "action": "store_true", "default": False, "help": "Render front RGB+Depth camera stream (Intel RealSense D435 emulation)."},
-        {"name": "--camera_depth_max_m", "type": float, "default": 10.0, "help": "Depth visualization max range in meters for camera rendering."},
         {"name": "--resume", "action": "store_true", "default": False, "help": "Resume training from a checkpoint."},
         {"name": "--experiment_name", "type": str, "help": "Experiment name override."},
         {"name": "--run_name", "type": str, "help": "Run name override."},
-        {"name": "--load_run", "type": str, "help": "Run folder to load when resuming."},
         {"name": "--checkpoint", "type": int, "help": "Checkpoint number to load."},
         {"name": "--headless", "action": "store_true", "default": False, "help": "Disable viewer rendering."},
         {"name": "--horovod", "action": "store_true", "default": False, "help": "Use horovod."},

@@ -23,9 +23,6 @@ class JointState:
 @dataclass
 class ImuState:
     angular_velocity_xyz: np.ndarray
-    linear_acceleration_xyz: np.ndarray
-    projected_gravity_xyz: np.ndarray
-    orientation_xyzw: np.ndarray
 
 
 @dataclass
@@ -44,3 +41,19 @@ class RobotState:
     base_linear_velocity_xyz: np.ndarray
     base_angular_velocity_xyz: np.ndarray
     camera: CameraState
+
+    @property
+    def q(self) -> np.ndarray:
+        return self.joints.positions
+
+    @property
+    def q_dot(self) -> np.ndarray:
+        return self.joints.velocities
+
+    @property
+    def joint_names(self) -> Tuple[str, ...]:
+        return self.joints.names
+
+    @property
+    def linear_velocity_xyz(self) -> np.ndarray:
+        return self.base_linear_velocity_xyz

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 
 from aliengo_competition.robot_interface.base import AliengoRobotInterface
+from aliengo_competition.robot_interface.types import CameraState, ImuState, JointState, RobotState
 
 
 @dataclass
@@ -36,8 +38,11 @@ class SimAliengoRobot(AliengoRobotInterface):
         self.env = env
         self.policy = policy
         self._speed = torch.zeros(3, device=self.env.device)
-        self._pitch = torch.tensor(0.0, device=self.env.device)
         self._command_template = None
+        self._step_index = 0
+        self._sim_time_s = 0.0
+        self._prev_base_lin_vel = None
+        self._latest_state = None
         self._last_result = StepResult(
             observation=self.env.get_observations(),
             reward=None,
@@ -45,6 +50,64 @@ class SimAliengoRobot(AliengoRobotInterface):
             info={},
         )
         self._refresh_command_template()
+        self._latest_state = self._extract_state(reset=True)
+
+    @staticmethod
+    def _tensor_to_numpy(value) -> np.ndarray:
+        if torch.is_tensor(value):
+            return value.detach().cpu().numpy().copy()
+        return np.asarray(value).copy()
+
+    def _get_control_dt(self) -> float:
+        base_env = self._unwrap_env()
+        dt = getattr(base_env, "dt", None)
+        try:
+            dt_value = float(dt)
+            if dt_value > 0.0:
+                return dt_value
+        except (TypeError, ValueError):
+            pass
+        return 0.02
+
+    def _extract_camera_state(self) -> CameraState:
+        camera = self.get_camera()
+        if not isinstance(camera, dict):
+            return CameraState(rgb=None, depth=None)
+        rgb = camera.get("image")
+        depth = camera.get("depth")
+        return CameraState(
+            rgb=None if rgb is None else np.asarray(rgb).copy(),
+            depth=None if depth is None else np.asarray(depth).copy(),
+        )
+
+    def _extract_state(self, *, reset: bool) -> RobotState:
+        base_env = self._unwrap_env()
+        dt = self._get_control_dt()
+
+        joint_positions = self._tensor_to_numpy(base_env.dof_pos[0])
+        joint_velocities = self._tensor_to_numpy(base_env.dof_vel[0])
+        base_lin_vel = self._tensor_to_numpy(base_env.base_lin_vel[0])
+        base_ang_vel = self._tensor_to_numpy(base_env.base_ang_vel[0])
+
+        joint_names = tuple(getattr(base_env, "dof_names", ()))
+        camera_state = self._extract_camera_state()
+
+        return RobotState(
+            step_index=self._step_index,
+            sim_time_s=self._sim_time_s,
+            dt=dt,
+            joints=JointState(
+                names=joint_names,
+                positions=joint_positions,
+                velocities=joint_velocities,
+            ),
+            imu=ImuState(
+                angular_velocity_xyz=base_ang_vel,
+            ),
+            base_linear_velocity_xyz=base_lin_vel,
+            base_angular_velocity_xyz=base_ang_vel,
+            camera=camera_state,
+        )
 
     def _unwrap_env(self):
         env = self.env
@@ -65,8 +128,8 @@ class SimAliengoRobot(AliengoRobotInterface):
             self._command_template = None
             return
 
-        # Keep trot command deterministic across runs. Only vx/vy/vw and pitch
-        # are controlled externally by the main controller.
+        # Keep trot command deterministic across runs. Only vx/vy/vw are
+        # controlled externally by the participant controller; pitch is fixed.
         fixed_values = {
             self.CMD_BODY_HEIGHT: 0.0,
             self.CMD_GAIT_FREQUENCY: 3.0,
@@ -75,6 +138,7 @@ class SimAliengoRobot(AliengoRobotInterface):
             self.CMD_GAIT_BOUND: 0.0,
             self.CMD_GAIT_DURATION: 0.5,
             self.CMD_FOOTSWING_HEIGHT: 0.08,
+            self.CMD_BODY_PITCH: 0.0,
             self.CMD_BODY_ROLL: 0.0,
             self.CMD_STANCE_WIDTH: 0.25,
             self.CMD_STANCE_LENGTH: 0.45,
@@ -92,7 +156,7 @@ class SimAliengoRobot(AliengoRobotInterface):
                 float(self._speed[0].item()),
                 float(self._speed[1].item()),
                 float(self._speed[2].item()),
-                float(self._pitch.item()),
+                0.0,
             )
             return
 
@@ -107,20 +171,15 @@ class SimAliengoRobot(AliengoRobotInterface):
         command[self.CMD_VY] = float(self._speed[1].item())
         command[self.CMD_VW] = float(self._speed[2].item())
         if command.shape[0] > self.CMD_BODY_PITCH:
-            command[self.CMD_BODY_PITCH] = float(self._pitch.item())
+            command[self.CMD_BODY_PITCH] = 0.0
         base_env.commands[:] = command.unsqueeze(0).repeat(base_env.num_envs, 1)
 
     def set_speed(self, vx: float, vy: float, vw: float) -> None:
         self._speed = torch.tensor([vx, vy, vw], device=self.env.device, dtype=torch.float32)
         self._apply_command()
 
-    def set_body_pitch(self, pitch: float) -> None:
-        self._pitch = torch.tensor(float(pitch), device=self.env.device, dtype=torch.float32)
-        self._apply_command()
-
     def stop(self) -> None:
         self._speed.zero_()
-        self._pitch.zero_()
         self._apply_command()
 
     def reset(self):
@@ -136,6 +195,9 @@ class SimAliengoRobot(AliengoRobotInterface):
         self._last_result = StepResult(observation=obs, reward=None, done=None, info=info)
         self._refresh_command_template()
         self._apply_command()
+        self._step_index = 0
+        self._sim_time_s = 0.0
+        self._latest_state = self._extract_state(reset=True)
         return obs
 
     def step(self):
@@ -154,6 +216,9 @@ class SimAliengoRobot(AliengoRobotInterface):
         else:
             raise ValueError("Unexpected environment step() return format.")
         self._last_result = StepResult(observation=obs, reward=reward, done=done, info=info)
+        self._step_index += 1
+        self._sim_time_s += self._get_control_dt()
+        self._latest_state = self._extract_state(reset=False)
         return obs, reward, done, info
 
     def get_camera(self):
@@ -165,6 +230,11 @@ class SimAliengoRobot(AliengoRobotInterface):
 
     def get_observation(self):
         return self._last_result.observation
+
+    def get_state(self) -> RobotState:
+        if self._latest_state is None:
+            self._latest_state = self._extract_state(reset=True)
+        return self._latest_state
 
     def is_fallen(self) -> bool:
         if self._last_result.done is None:

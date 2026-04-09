@@ -2,14 +2,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from aliengo_competition.robot_interface.types import RobotState
+
 
 class AliengoRobotInterface(ABC):
     @abstractmethod
     def set_speed(self, vx: float, vy: float, vw: float) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def set_body_pitch(self, pitch: float) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -26,6 +24,10 @@ class AliengoRobotInterface(ABC):
 
     @abstractmethod
     def get_camera(self):
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_state(self) -> RobotState:
         raise NotImplementedError
 
     @abstractmethod

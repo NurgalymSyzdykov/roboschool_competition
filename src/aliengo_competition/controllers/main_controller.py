@@ -1,19 +1,11 @@
 from __future__ import annotations
 
 import math
-from typing import Any
 
 import numpy as np
 
 from aliengo_competition.robot_interface.base import AliengoRobotInterface
-
-
-def _extract_base_observation(obs):
-    if isinstance(obs, dict):
-        obs = obs.get("obs", obs)
-    if hasattr(obs, "ndim") and obs.ndim > 1:
-        obs = obs[0]
-    return obs
+from aliengo_competition.robot_interface.types import CameraState
 
 
 def _unwrap_env_from_robot(robot: AliengoRobotInterface):
@@ -54,11 +46,11 @@ class _CameraRenderer:
         self._cv2.namedWindow(self._window_name, self._cv2.WINDOW_NORMAL)
         self._active = True
 
-    def show(self, camera: Any) -> None:
-        if not self._active or not isinstance(camera, dict):
+    def show(self, camera: CameraState) -> None:
+        if not self._active or not isinstance(camera, CameraState):
             return
-        image = camera.get("image")
-        depth = camera.get("depth")
+        image = camera.rgb
+        depth = camera.depth
         if image is None or depth is None:
             return
 
@@ -135,7 +127,6 @@ def run(
     lateral_speed_amp = 0.22
     yaw_rate_amp = 0.75
     yaw_rate_damping = 0.55
-    pitch_amp = 0.08
     ang_vel_scale = 0.25
     # ================== USER PARAMETERS END ==================
 
@@ -143,31 +134,26 @@ def run(
 
     try:
         for step_index in range(total_steps):
-            obs = robot.get_observation()
-            camera = robot.get_camera()
-            _ = obs
-            camera_renderer.show(camera)
-            base_obs = _extract_base_observation(obs)
-            omega_z = float(base_obs[5].item()) / ang_vel_scale if len(base_obs) > 5 else 0.0
+            state = robot.get_state()
+            camera_renderer.show(state.camera)
+            omega_z = float(state.imu.angular_velocity_xyz[2]) / ang_vel_scale
 
             # ================= USER CONTROL LOGIC START =================
             # This block is the intended place for participant logic.
             # You can:
-            # - read obs / camera
+            # - read state.q / state.q_dot / state.imu / state.linear_velocity_xyz / state.camera
             # - compute desired vx, vy, vw
-            # - compute desired body pitch
             #
             # Example below:
             # - smooth warmup
             # - continuous figure-eight in velocity space
             # - yaw-rate command combines feed-forward turn and damping
-            sim_t = step_index * control_dt
+            sim_t = state.sim_time_s
             local_t = max(sim_t - segment_start_t, 0.0)
             if local_t < warmup_s:
                 vx = 0.0
                 vy = 0.0
                 vw = 0.0
-                pitch = 0.0
             else:
                 motion_t = local_t - warmup_s
                 phase = 2.0 * math.pi * motion_t / max(trajectory_period_s, control_dt)
@@ -178,11 +164,9 @@ def run(
                 yaw_ff = yaw_rate_amp * math.sin(phase + math.pi / 4.0)
                 vw = ramp * (yaw_ff - yaw_rate_damping * omega_z)
                 vw = max(min(vw, 1.0), -1.0)
-                pitch = ramp * pitch_amp * math.sin(phase + math.pi / 2.0)
             # ================== USER CONTROL LOGIC END ==================
 
             robot.set_speed(vx, vy, vw)
-            robot.set_body_pitch(pitch)
             robot.step()
             if robot.is_fallen():
                 robot.stop()
