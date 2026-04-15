@@ -2,50 +2,60 @@
 
 Репозиторий для соревнования по управлению Aliengo в Isaac Gym.
 
-Здесь есть два способа работы:
+Проект поддерживает три рабочих сценария:
 
-1. Python-контроллер - вариант для локального запуска и проверки логики.
-2. ROS 2 контейнеры - предпочтительный вариант для работы через ROS-интерфейс и отладки по топикам.
+1. Python-контроллер в Docker для быстрой проверки логики.
+2. Полный ROS 2 режим в Docker для работы через топики и bridge.
+3. Локальный Isaac Gym на хосте и ROS 2 bridge в контейнере, если нужно снизить расход GPU-памяти по сравнению с Docker-симуляцией.
+
+## Быстрый выбор режима
+
+- Если нужно просто проверить свою логику: используйте `scripts/controller.py`.
+- Если нужно работать через ROS-топики: используйте `ros2_isaac_bridge/sim_side/isaac_controller.py` вместе с ROS 2 bridge.
+- Если в Docker Isaac Gym потребляет слишком много VRAM: запускайте Isaac Gym локально на хосте, а ROS 2 контейнер оставляйте как есть.
+
+## Где писать свою логику
+
+Основная пользовательская логика находится в `src/aliengo_competition/controllers/main_controller.py`.
+
+Внутри файла есть два ключевых блока:
+
+- `USER PARAMETERS START / END` - параметры поведения.
+- `USER CONTROL LOGIC START / END` - код, который формирует команды роботу.
+
+Внутри `RobotState` доступны, в частности:
+
+- `state.q`, `state.q_dot` - положения и скорости суставов
+- `state.joints.name` - имена суставов
+- `state.vx`, `state.vy`, `state.wz` - линейная и угловая скорость корпуса
+- `state.base_linear_velocity_xyz` - полный вектор линейной скорости
+- `state.base_angular_velocity_xyz` - полный вектор угловой скорости
+- `state.imu.angular_velocity_xyz` - данные IMU
+- `state.camera.rgb`, `state.camera.depth` - данные камер
+- `object_queue` - очередь объектов
+
+Для логирования найденного объекта нужно сохранить шаблон:
+
+- `get_found_object_id(...)` - логика определения объекта
+- `log_found_object(...)` - запись результата в судейский лог
 
 ## Структура проекта
 
-- `src/aliengo_competition/controllers/main_controller.py` - основной файл логики участника.
-- `scripts/controller.py` - точка входа для Python-режима.
-- `ros2_isaac_bridge/` - интеграция Isaac Gym и ROS 2 Jazzy.
-- `docker/` - Dockerfile и `docker compose` для обоих режимов.
-- `docker/ctl.sh` - скрипт-оболочка для сборки и запуска контейнеров.
+- `src/aliengo_competition/controllers/main_controller.py` - основная логика участника
+- `scripts/controller.py` - точка входа для Python-режима
+- `scripts/play.py` - локальный запуск/проверка окружения Isaac Gym
+- `ros2_isaac_bridge/sim_side/isaac_controller.py` - симуляция в ROS-сценарии
+- `ros2_isaac_bridge/sim_side/sim_bridge_client.py` - сокетный клиент между симуляцией и ROS bridge
+- `ros2_isaac_bridge/ros2_ws/src/ros2_bridge_pkg/ros2_bridge_pkg/bridge_node.py` - ROS 2 bridge node
+- `docker/` - Dockerfile, compose-файлы и утилиты запуска
+- `docker/ctl.sh` - основной скрипт для сборки и запуска контейнеров
 
-## Как читать решение
+## Архитектура ROS 2 режима
 
-Логика участника находится в `main_controller.py` и делится на два блока:
-
-- `USER PARAMETERS START / END` - параметры поведения.
-- `USER CONTROL LOGIC START / END` - основная логика шага.
-
-Внутри логики доступны:
-
-- положения и скорости суставов: `state.q`, `state.q_dot`
-- имена суставов: `state.joints.name`
-- линейная и угловая скорость корпуса: `state.vx`, `state.vy`, `state.wz`
-- полный вектор линейной скорости: `state.base_linear_velocity_xyz`
-- полный вектор угловой скорости: `state.base_angular_velocity_xyz`
-- IMU: `state.imu.angular_velocity_xyz`
-- камера: `state.camera.rgb`, `state.camera.depth`
-- очередь объектов: `object_queue`
-
-Для логирования найденного объекта предусмотрен обязательный шаблон:
-
-- `get_found_object_id(...)` - ваша логика поиска объекта
-- `log_found_object(...)` - запись найденного объекта в судейский лог
-
-Шаблон не следует удалять, его необходимо заполнить собственной логикой.
-
-## ROS-архитектура
-
-ROS-режим разбит на два контейнера:
+ROS-сценарий разделён на две части:
 
 - `aliengo-competition` - Isaac Gym и симуляция
-- `ros2-jazzy` - ROS 2 Jazzy, bridge node, `rqt`, `rviz2` и утилиты
+- `ros2-jazzy` - ROS 2 Jazzy, bridge node, `rqt`, `rviz2` и отладочные инструменты
 
 Схема обмена:
 
@@ -61,16 +71,16 @@ bridge_node.py  <---->  SimBridgeClient
    ROS topics
 ```
 
-Используемые порты моста:
+Используемые порты:
 
 - `5005` - команды `vx`, `vy`, `wz` из ROS в симуляцию
-- `5006` - текущая скорость корпуса
+- `5006` - скорость корпуса
 - `5007` - RGB изображение
-- `5008` - изображение глубины
+- `5008` - depth изображение
 - `5009` - суставы
 - `5010` - IMU
 
-ROS bridge публикует топики:
+Bridge публикует топики:
 
 - `/aliengo/base_velocity`
 - `/aliengo/camera/color/image_raw`
@@ -78,58 +88,65 @@ ROS bridge публикует топики:
 - `/aliengo/joint_states`
 - `/aliengo/imu`
 
-И принимает:
+Bridge принимает:
 
 - `/cmd_vel`
 
 ## Подготовка окружения
 
+### Требования для Docker-варианта
+
 Нужны:
 
 - Docker
 - Docker Compose
-- NVIDIA драйверы и `nvidia-container-toolkit`
-- `xhost` для X11, если нужен просмотр окон
+- NVIDIA драйверы
+- `nvidia-container-toolkit`
+- X11 и `xhost`, если нужна визуализация
 
-Если графический интерфейс запускается через Docker, хост должен разрешить доступ к X-серверу. Скрипт `docker/ctl.sh` выполняет это автоматически, однако переменная `DISPLAY` должна быть задана.
+Если вы запускаете GUI из контейнера, переменная `DISPLAY` должна быть задана на хосте. Скрипт `docker/ctl.sh` сам настраивает доступ к X-серверу, если окружение уже готово.
 
-## Запуск Python-контроллера
+### Требования для локального Isaac Gym
 
-Этот режим используется для проверки логики без ROS.
+Нужны:
 
-### 1. Собрать и запустить контейнер симуляции
+- Conda
+- Python `3.8`
+- локальная копия Isaac Gym внутри `docker/isaac-gym/isaacgym`
+
+## Сценарий 1. Python-контроллер в Docker
+
+Этот режим подходит для простой проверки логики без ROS.
+
+### 1. Поднять контейнер симуляции
 
 ```bash
 docker/ctl.sh up
 ```
 
-### 2. Открыть терминал в контейнере
-
-В новом терминале:
+### 2. Открыть shell в контейнере
 
 ```bash
 docker/ctl.sh exec
 ```
 
-Это откроет shell внутри уже запущенного `aliengo-competition` контейнера.
-
-### 3. Запустить Python-контроллер
+### 3. Запустить контроллер
 
 ```bash
 python scripts/controller.py --steps 15000 --seed 0
 ```
 
-Дополнительно:
+Полезные флаги:
 
 - `--no_render_camera` - отключить окно камеры
-- `--steps` - число шагов управления
-- `--seed` - seed для воспроизводимости
+- `--steps` - ограничить число шагов
+- `--seed` - зафиксировать seed
 
-## Запуск ROS 2 режима
+## Сценарий 2. Полный ROS 2 режим в Docker
 
-Этот режим рекомендуется для работы через ROS и проверки взаимодействия через топики.
+Этот режим нужен, если вы хотите работать через ROS 2 топики и стандартный bridge.
 
-### 1. Собрать базовый контейнер симуляции
+### 1. Поднять контейнер симуляции
 
 ```bash
 docker/ctl.sh up
@@ -147,7 +164,7 @@ docker/ctl.sh ros2-build
 docker/ctl.sh ros2-up
 ```
 
-### 4. Открыть первый терминал для симуляции
+### 4. Запустить симуляцию
 
 В отдельном терминале:
 
@@ -156,36 +173,24 @@ docker/ctl.sh exec
 python ros2_isaac_bridge/sim_side/isaac_controller.py
 ```
 
-Этот процесс:
+### 5. Запустить ROS bridge
 
-- читает команды от ROS-моста
-- шагает симуляцию
-- отправляет RGB, depth, суставы, скорость и IMU в мост
-
-### 5. Открыть второй терминал для ROS-моста
-
-В ещё одном терминале:
+В другом терминале:
 
 ```bash
 docker/ctl.sh ros2-exec
 bash /workspace/aliengo_competition/ros2_isaac_bridge/run_bridge_node.sh
 ```
 
-Этот процесс:
+### 6. Использовать ROS-инструменты
 
-- принимает данные из симуляции
-- публикует их в ROS 2 топики
-- пересылает `cmd_vel` обратно в симуляцию
-
-### 6. Открыть дополнительные терминалы
-
-Любой новый терминал открывается так же:
+Дополнительные терминалы:
 
 ```bash
 docker/ctl.sh exec
 ```
 
-или для ROS:
+или:
 
 ```bash
 docker/ctl.sh ros2-exec
@@ -196,166 +201,145 @@ docker/ctl.sh ros2-exec
 - `ros2 topic list`
 - `ros2 topic echo /aliengo/base_velocity`
 - `rqt_graph`
-- отладочных скриптов
+- `rviz2`
 
-## Как контейнеры общаются между собой
+## Сценарий 3. Локальный Isaac Gym на хосте + ROS 2 bridge в контейнере
 
-Связь построена через host network и UDP/TCP сокеты.
+Этот вариант нужен, если симуляция внутри Docker потребляет слишком много GPU-памяти, а при локальном запуске на хосте работает заметно легче.
 
-1. ROS 2 нода публикует команду `cmd_vel`.
-2. `SimBridgeClient` в симуляции получает её по UDP на порту `5005`.
-3. Симуляция отправляет обратно:
-   - состояние корпуса
-   - RGB кадр
-   - depth
-   - суставы
-   - IMU
-4. `BridgeNode` в ROS 2 контейнере принимает эти данные и публикует их как ROS-топики.
+В этой схеме:
 
-Это означает, что контейнеры не взаимодействуют друг с другом как обычные ROS-ноды. Обмен реализован через мост и сетевые сокеты.
+- Isaac Gym запускается локально на хосте
+- ROS 2 bridge остаётся в контейнере
+- контейнер `aliengo-competition` для симуляции не нужен
 
-## Локальный Isaac Gym И ROS Контейнер
+Это работает, потому что `bridge_node.py` и `SimBridgeClient` общаются через `host network` и сокеты на портах `5005-5010`.
 
-Если Isaac Gym удобнее запускать на хосте, а ROS 2 bridge оставить в контейнере, это уже совместимо с текущей схемой. `bridge_node.py` и `SimBridgeClient` общаются через `host network`, поэтому контейнеру не нужен контейнер симуляции рядом, ему нужен только доступ к портам `5005-5010` на хосте.
-
-### 1. Подготовить локальное окружение Isaac Gym
-
-В shell на хосте:
+### 1. Создать conda environment
 
 ```bash
-source scripts/use_local_isaacgym.sh /path/to/isaacgym roboschool
+conda create -y -n roboschool python=3.8
+conda activate roboschool
 ```
 
-Этот script делает следующий pipeline:
-
-- создаёт conda environment `roboschool` на Python 3.8, если его ещё нет
-- делает `pip install -e .` в корне `roboschool_competition`
-- делает `pip install -e .` в `isaacgym/python`
-- добавляет `${CONDA_PREFIX}/lib` в `LD_LIBRARY_PATH`
-- оставляет shell в готовом активированном окружении
-
-Если Isaac Gym лежит в `docker/isaac-gym/isaacgym`, `~/isaacgym` или `/opt/isaacgym`, путь можно не передавать:
+### 2. Установить проект
 
 ```bash
-source scripts/use_local_isaacgym.sh
+cd "$HOME/workspace/roboschool_competition"
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -e .
 ```
 
-### 2. Запустить Isaac Gym На Хосте
-
-Для Python-режима:
+### 3. Установить Isaac Gym Python package
 
 ```bash
-python scripts/controller.py --steps 15000 --seed 0
+cd "$HOME/workspace/roboschool_competition/docker/isaac-gym/isaacgym/python"
+python -m pip install -e .
 ```
 
-Для ROS-режима симуляции на хосте:
+### 4. Один раз прописать `PYTHONPATH`
+
+Этот шаг делается один раз, например через `~/.bashrc`:
 
 ```bash
-python ros2_isaac_bridge/sim_side/isaac_controller.py
+echo 'export PYTHONPATH="$HOME/workspace/roboschool_competition/docker/isaac-gym/isaacgym/python:$HOME/workspace/roboschool_competition/src:$HOME/workspace/roboschool_competition:${PYTHONPATH}"' >> ~/.bashrc
+source ~/.bashrc
 ```
 
-### 3. Поднять Только ROS 2 Контейнер
+### 5. В каждом новом shell после `conda activate` экспортировать `LD_LIBRARY_PATH`
+
+Этот шаг нужно выполнять каждый раз после активации окружения:
 
 ```bash
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${CONDA_PREFIX}/lib"
+```
+
+### 6. Проверить, что окружение собрано
+
+```bash
+python -c "import isaacgym, torch, aliengo_gym; print('ok')"
+```
+
+### 7. Поднять только ROS 2 контейнер
+
+```bash
+cd "$HOME/workspace/roboschool_competition"
 docker/ctl.sh ros2-build
 docker/ctl.sh ros2-up
 ```
 
-### 4. Запустить Bridge В ROS Контейнере
+### 8. Сначала запустить bridge в контейнере
 
 ```bash
+cd "$HOME/workspace/roboschool_competition"
 docker/ctl.sh ros2-exec
 bash /workspace/aliengo_competition/ros2_isaac_bridge/run_bridge_node.sh
 ```
 
-В этом режиме `docker/ctl.sh up` не нужен: Isaac Gym работает на хосте, а контейнер `ros2-jazzy` подключается к нему через те же сокеты и порты, что и в полностью docker-варианте.
+Bridge лучше запускать раньше симуляции, потому что depth-канал использует TCP на порту `5008`, и `isaac_controller.py` ожидает, что этот порт уже слушается.
 
-## Как устроен Python-вариант
+### 9. Запустить Isaac Gym локально на хосте
 
-Python-вариант живёт в:
+Для Python-варианта:
+
+```bash
+cd "$HOME/workspace/roboschool_competition"
+conda activate roboschool
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${CONDA_PREFIX}/lib"
+python scripts/controller.py --steps 15000 --seed 0
+```
+
+Для ROS-варианта:
+
+```bash
+cd "$HOME/workspace/roboschool_competition"
+conda activate roboschool
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${CONDA_PREFIX}/lib"
+python ros2_isaac_bridge/sim_side/isaac_controller.py
+```
+
+## Как контейнеры и процессы общаются
+
+Обмен построен не как прямое взаимодействие обычных ROS-нод между контейнерами, а через bridge и сокеты.
+
+Последовательность такая:
+
+1. ROS 2 нода публикует `cmd_vel`.
+2. `bridge_node.py` принимает команду.
+3. `SimBridgeClient` передаёт её в симуляцию через порт `5005`.
+4. Симуляция отправляет обратно скорость, RGB, depth, IMU и суставы.
+5. Bridge публикует это как ROS 2 топики.
+
+Из-за `network_mode: host` ROS 2 контейнер может работать как с симуляцией в Docker, так и с `isaac_controller.py`, запущенным прямо на хосте.
+
+## Как устроены режимы запуска
+
+### Python-вариант
+
+Основные файлы:
 
 - `scripts/controller.py`
 - `src/aliengo_competition/controllers/main_controller.py`
 
-Что делает `scripts/controller.py`:
+Что происходит:
 
-- поднимает аргументы командной строки
+- `scripts/controller.py` разбирает аргументы
 - создаёт интерфейс робота
-- вызывает `run(...)`
+- вызывает основной цикл управления
 
-Что делает `main_controller.py`:
+### ROS-вариант
 
-- получает `RobotState`
-- читает измерения
-- формирует команду `vx`, `vy`, `vw`
-- логирует шаги и найденные объекты
+Основные файлы:
 
-## Как устроен ROS-вариант
+- `ros2_isaac_bridge/sim_side/isaac_controller.py`
+- `ros2_isaac_bridge/sim_side/sim_bridge_client.py`
+- `ros2_isaac_bridge/ros2_ws/src/ros2_bridge_pkg/ros2_bridge_pkg/bridge_node.py`
 
-ROS-вариант состоит из трёх частей:
+Что происходит:
 
-1. Симуляция: `ros2_isaac_bridge/sim_side/isaac_controller.py`
-2. Bridge client: `ros2_isaac_bridge/sim_side/sim_bridge_client.py`
-3. ROS node: `ros2_isaac_bridge/ros2_ws/src/ros2_bridge_pkg/ros2_bridge_pkg/bridge_node.py`
-
-### Что делает `isaac_controller.py`
-
-- получает команду от ROS
-- применяет её к симуляции
-- снимает телеметрию
-- отправляет её в bridge
-
-### Что делает `bridge_node.py`
-
-- принимает сокеты от симуляции
-- публикует данные в ROS-топики
-- слушает `/cmd_vel`
-- пересылает скорость обратно в симуляцию
-
-### Что делает `sim_bridge_client.py`
-
-- реализует сетевой клиент для передачи:
-  - `vx`, `vy`, `wz`
-  - `state`
-  - `rgb`
-  - `depth`
-  - `joint_states`
-  - `imu`
-
-## Fork и работа в своей копии
-
-Если вы работаете из своей копии репозитория:
-
-### Вариант через GitHub fork
-
-1. Откройте репозиторий на GitHub.
-2. Нажмите `Fork`.
-3. Клонируйте свой fork:
-
-```bash
-git clone git@github.com:<your-user>/roboschool_competition.git
-cd roboschool_competition
-```
-
-4. Добавьте upstream:
-
-```bash
-git remote add upstream git@github.com:<original-owner>/roboschool_competition.git
-git fetch upstream
-```
-
-### Рекомендуемый рабочий процесс
-
-- создавайте отдельную ветку под задачу
-- не коммитьте напрямую в `main`
-- периодически подтягивайте изменения из upstream
-
-Пример:
-
-```bash
-git checkout -b my-competition-solution
-git push -u origin my-competition-solution
-```
+- `isaac_controller.py` шагает симуляцию и собирает телеметрию
+- `sim_bridge_client.py` передаёт команды и данные через сокеты
+- `bridge_node.py` публикует их в ROS 2 и слушает `/cmd_vel`
 
 ## Полезные команды
 
@@ -371,7 +355,21 @@ docker/ctl.sh ros2-exec
 docker/ctl.sh ros2-down
 ```
 
-## Где редактировать решение
+## Работа в своей копии репозитория
 
-- Python-режим: `src/aliengo_competition/controllers/main_controller.py`
-- ROS-режим: `ros2_isaac_bridge/sim_side/isaac_controller.py`
+Если вы ведёте разработку в своём fork:
+
+```bash
+git clone git@github.com:<your-user>/roboschool_competition.git
+cd roboschool_competition
+git remote add upstream git@github.com:<original-owner>/roboschool_competition.git
+git fetch upstream
+git checkout -b my-competition-solution
+git push -u origin my-competition-solution
+```
+
+Рекомендуется:
+
+- работать в отдельной ветке
+- не коммитить напрямую в `main`
+- периодически подтягивать изменения из `upstream`

@@ -100,18 +100,12 @@ def load_env(label, headless=False, seed=0):
     env = VelocityTrackingEasyEnv(seed=seed, sim_device='cuda:0', headless=headless, cfg=Cfg)
     env = HistoryWrapper(env)
 
-    # load policy
-    from ml_logger import logger
-    from aliengo_gym_learn.ppo_cse.actor_critic import ActorCritic
-
     policy = load_policy(logdir)
 
     return env, policy
 
 
 def play_aliengo(headless=True):
-    from ml_logger import logger
-
     from pathlib import Path
     from aliengo_gym import MINI_GYM_ROOT_DIR
     import glob
