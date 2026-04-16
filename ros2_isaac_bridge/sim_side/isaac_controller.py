@@ -240,6 +240,9 @@ def main():
         # IMPORTANT! Add each detected object here:
         # if YOUR_CONDITION:
         #     log_detected_object(DETECTED_OBJECT_ID)
+        detected_object_id = bridge.receive_detected_object()
+        if detected_object_id is not None:
+            log_detected_object(detected_object_id)
 
         camera_data = env.get_front_camera_data(0)
 
