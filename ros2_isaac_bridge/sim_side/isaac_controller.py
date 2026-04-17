@@ -160,6 +160,8 @@ def main():
     detected_objects = {}
     i = 0
 
+    last_sequence_send_time = -1.0
+
     def log_detected_object(object_id):
         nonlocal detected_objects, log_file, t, x, y, yaw
 
@@ -224,6 +226,10 @@ def main():
 
         t = i * env.dt
         i += 1
+
+        if t - last_sequence_send_time >= 1.0:
+            bridge.send_sequence(SEQUENCE_OF_OBJECTS)
+            last_sequence_send_time = t
 
         x = env.root_states[0, 0].item()
         y = env.root_states[0, 1].item()
