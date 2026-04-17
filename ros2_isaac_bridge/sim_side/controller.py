@@ -219,7 +219,7 @@ class HLInterfaceController(Node):
         warped_gray = cv2.cvtColor(warped_rgb, cv2.COLOR_RGB2GRAY)
         kp_face, des_face = self.orb.detectAndCompute(warped_gray, None)
 
-        if des_face is None or len(kp_face) < 25:
+        if des_face is None or len(kp_face) < 14:
             return None
 
         best = None
@@ -241,7 +241,7 @@ class HLInterfaceController(Node):
                 if m.distance < 0.72 * n.distance:
                     good_matches.append(m)
 
-            if len(good_matches) < 12:
+            if len(good_matches) < 5:
                 continue
 
             src_pts = np.float32([temp["kp"][m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
