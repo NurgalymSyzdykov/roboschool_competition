@@ -63,14 +63,13 @@ class HLInterfaceController(Node):
         self.detected_object_pub = self.create_publisher(Int32, "/competition/detected_object", 10)
 
         # Подписка на параметры камеры
-        self.cam_sub = self.create_subscription(CameraInfo, "/aliengo/camera/depth/camera_info",
+        self.cam_sub = self.create_subscription(CameraInfo, "/camera/camera_info",
                                                 self._cam_info_callback, 10)
 
-        self.vel_sub = self.create_subscription(TwistStamped, "/aliengo/base_velocity", self._vel_callback, 10)
-        self.joint_sub = self.create_subscription(JointState, "/aliengo/joint_states", self._joint_callback, 10)
-        self.imu_sub = self.create_subscription(Imu, "/aliengo/imu", self._imu_callback, 10)
-        self.rgb_sub = self.create_subscription(Image, "/aliengo/camera/color/image_raw", self._rgb_callback, 10)
-        self.depth_sub = self.create_subscription(Image, "/aliengo/camera/depth/image_raw", self._depth_callback, 10)
+        self.vel_sub = self.create_subscription(TwistStamped, "/odom", self._vel_callback, 10)
+        self.imu_sub = self.create_subscription(Imu, "/imu", self._imu_callback, 10)
+        self.rgb_sub = self.create_subscription(Image, "/camera/color/image_raw", self._rgb_callback, 10)
+        self.depth_sub = self.create_subscription(Image, "/camera/depth/image_raw", self._depth_callback, 10)
 
         # --- Динамические параметры камеры ---
         self.hfov_rad = math.radians(86.0)  # Значение по умолчанию
@@ -129,6 +128,7 @@ class HLInterfaceController(Node):
         fx = msg.k[0]
         fy = msg.k[4]
         if fx > 0 and fy > 0:
+            print(msg)
             self.hfov_rad = 2.0 * math.atan(msg.width / (2.0 * fx))
             self.vfov_rad = 2.0 * math.atan(msg.height / (2.0 * fy))
             self.cam_intrinsics_ready = True
@@ -281,8 +281,8 @@ class HLInterfaceController(Node):
 
     # ---------------- CALLBACKS ----------------
     def _vel_callback(self, msg):
-        self.latest_base_velocity = {"vx": msg.twist.linear.x, "vy": msg.twist.linear.y, "wz": msg.twist.angular.z,
-                                     "stamp_sec": self._msg_time_to_sec(msg.header.stamp)}
+        self.latest_base_velocity = {"vx": msg.linear_vel[0], "vy": msg.linear_vel[1], "wz": msg.angular_velocity[2],
+                                     "stamp_sec": self._msg_time_to_sec(msg.header.timestamp)}
 
     def _joint_callback(self, msg):
         self.latest_joint_state = {"names": list(msg.name), "position": list(msg.position),
@@ -290,8 +290,8 @@ class HLInterfaceController(Node):
                                    "stamp_sec": self._msg_time_to_sec(msg.header.stamp)}
 
     def _imu_callback(self, msg):
-        self.latest_imu = {"wx": msg.angular_velocity.x, "wy": msg.angular_velocity.y, "wz": msg.angular_velocity.z,
-                           "stamp_sec": self._msg_time_to_sec(msg.header.stamp)}
+        self.latest_imu = {"wx": msg.angular_vel[0], "wy": msg.angular_vel[1], "wz": msg.angular_vel[2],
+                           "stamp_sec": self._msg_time_to_sec(msg.header.timestamp)}
 
     def _rgb_callback(self, msg):
         self.latest_rgb = np.frombuffer(msg.data, dtype=np.uint8).reshape((msg.height, msg.width, 3))
