@@ -550,7 +550,7 @@ class HLInterfaceController(Node):
 
         if self.is_recovering:
             if now < self.recovery_end_time:
-                self.send_command(-0.7, 0.0, 1.2)
+                self.send_command(-1.5, 0.0, 2)
                 return
             else:
                 self.is_recovering = False
@@ -599,8 +599,8 @@ class HLInterfaceController(Node):
             err_x = (cx - frame_w / 2) / (frame_w / 2)
 
             if obj_depth > self.approach_depth_threshold:
-                target_wz_obj = -0.8 * err_x
-                target_vx_obj = 0.4 if abs(err_x) < 0.35 else 0.15
+                target_wz_obj = -2 * err_x
+                target_vx_obj = 1 if abs(err_x) < 0.3 else 0.4
 
                 self.send_command(target_vx_obj, 0.0, target_wz_obj)
                 return
@@ -637,19 +637,19 @@ class HLInterfaceController(Node):
         vx, vy, wz = 0.0, 0.0, 0.0
 
         if self.is_recovering:
-            vx, wz = -0.5, 1.8
+            vx, wz = -1.5, 2
         elif self.state == "EXPLORE":
             if dist_C < 1.2:
-                vx = 0.15
-                wz = 1.8 if dist_L > dist_R else -1.8
+                vx = 0.2
+                wz = 2 if dist_L > dist_R else -2
             elif dist_L < 0.7:
                 vx = 1.5
-                vy = -0.5
-                wz = -0.6
+                vy = -0.75
+                wz = -1
             elif dist_R < 0.7:
                 vx = 1.5
-                vy = 0.5  # Валим боком
-                wz = 0.6
+                vy = 0.75  # Валим боком
+                wz = 1
             else:
                 vx = 1.5
                 vy = 0.0
