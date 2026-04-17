@@ -10,6 +10,7 @@ from collections import deque, Counter
 from utils import OccupancyGrid, AStarPlanner
 from geometry_msgs.msg import Twist, TwistStamped
 from sensor_msgs.msg import Image, Imu, JointState
+from std_msgs.msg import Int32, Int32MultiArray
 
 
 class HLInterfaceController(Node):
@@ -18,6 +19,7 @@ class HLInterfaceController(Node):
 
         # ---------------- ROS I/O ----------------
         self.cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
+        self.detected_object_pub = self.create_publisher(Int32, "/competition/detected_object", 10)
         self.vel_sub = self.create_subscription(TwistStamped, "/aliengo/base_velocity", self._vel_callback, 10)
         self.joint_sub = self.create_subscription(JointState, "/aliengo/joint_states", self._joint_callback, 10)
         self.imu_sub = self.create_subscription(Imu, "/aliengo/imu", self._imu_callback, 10)
@@ -80,6 +82,11 @@ class HLInterfaceController(Node):
             return None
         return self.sequence_of_objects[self.sequence_index]
 
+    def publish_detected_object(self, object_id: int) -> None:
+        msg = Int32()
+        msg.data = int(object_id)
+        self.detected_object_pub.publish(msg)
+
     def log_detected_object(self, object_id: int, object_name: str, t: float) -> None:
         if object_id in self.detected_objects:
             return
@@ -121,123 +128,6 @@ class HLInterfaceController(Node):
             "name": names[leader_id],
             "count": leader_count,
         }
-
-    def detect_object_orb(self) -> Optional[dict]:
-        if self.latest_rgb is None:
-            return None
-
-        frame_gray = cv2.cvtColor(self.latest_rgb, cv2.COLOR_RGB2GRAY)
-        kp_frame, des_frame = self.orb.detectAndCompute(frame_gray, None)
-
-        if des_frame is None or len(kp_frame) < 20:
-            return None
-
-        best_detection = None
-        best_score = -1.0
-
-        frame_h, frame_w = frame_gray.shape[:2]
-
-        for temp in self.templates:
-            if temp["des"] is None:
-                continue
-
-            matches_knn = self.bf.knnMatch(temp["des"], des_frame, k=2)
-
-            good_matches = []
-            for pair in matches_knn:
-                if len(pair) < 2:
-                    continue
-                m, n = pair
-                if m.distance < 0.78 * n.distance:
-                    good_matches.append(m)
-
-            if len(good_matches) < 8:
-                continue
-
-            src_pts = np.float32([temp["kp"][m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-            dst_pts = np.float32([kp_frame[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-
-            H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
-            if H is None or mask is None:
-                continue
-
-            inliers = int(mask.sum())
-            if inliers < 6:
-                continue
-
-            w = temp["width"]
-            h = temp["height"]
-
-            template_corners = np.float32([
-                [0, 0],
-                [w - 1, 0],
-                [w - 1, h - 1],
-                [0, h - 1],
-            ]).reshape(-1, 1, 2)
-
-            projected_corners = cv2.perspectiveTransform(template_corners, H).reshape(-1, 2)
-
-            xs = projected_corners[:, 0]
-            ys = projected_corners[:, 1]
-
-            x1 = int(np.clip(np.min(xs), 0, frame_w - 1))
-            y1 = int(np.clip(np.min(ys), 0, frame_h - 1))
-            x2 = int(np.clip(np.max(xs), 0, frame_w - 1))
-            y2 = int(np.clip(np.max(ys), 0, frame_h - 1))
-
-            bbox_w = x2 - x1
-            bbox_h = y2 - y1
-
-            if bbox_w < 20 or bbox_h < 20:
-                continue
-
-            if bbox_w > frame_w * 0.95 or bbox_h > frame_h * 0.95:
-                continue
-
-            score = float(inliers) / max(1, len(good_matches))
-
-            if score > best_score:
-                best_score = score
-                best_detection = {
-                    "id": temp["id"],
-                    "name": temp["name"],
-                    "bbox": (x1, y1, x2, y2),
-                    "center_x": int((x1 + x2) / 2),
-                    "center_y": int((y1 + y2) / 2),
-                    "score": score,
-                    "num_inliers": inliers,
-                }
-
-        return best_detection
-
-    def get_depth_at_bbox_center(self, bbox: tuple, window: int = 5) -> Optional[float]:
-        """
-        Берет медианную глубину в маленьком окне вокруг центра bbox.
-        """
-        if self.latest_depth is None:
-            return None
-
-        x1, y1, x2, y2 = bbox
-        cx = int((x1 + x2) / 2)
-        cy = int((y1 + y2) / 2)
-
-        h, w = self.latest_depth.shape[:2]
-
-        x_min = max(0, cx - window)
-        x_max = min(w, cx + window + 1)
-        y_min = max(0, cy - window)
-        y_max = min(h, cy + window + 1)
-
-        patch = self.latest_depth[y_min:y_max, x_min:x_max].copy()
-        patch = np.nan_to_num(patch, nan=np.inf, posinf=np.inf, neginf=np.inf)
-
-        valid = patch[np.isfinite(patch)]
-        valid = valid[(valid > 0.1) & (valid < 10.0)]
-
-        if len(valid) == 0:
-            return None
-
-        return float(np.median(valid))
 
     def _load_templates(self):
         base_path = '/workspace/aliengo_competition/resources/assets/objects/'
@@ -298,49 +188,22 @@ class HLInterfaceController(Node):
 
         return np.array([top_left, top_right, bottom_right, bottom_left], dtype=np.float32)
 
-    def detect_object_two_stage(self) -> Optional[dict]:
-        candidate = self.detect_cube_face_candidate()
-        if candidate is None:
-            self.get_logger().info("two_stage: no face candidate")
-            return None
-
-        self.get_logger().info(f"two_stage: face candidate bbox={candidate['bbox']}")
-
-        warped = self.warp_face_patch(candidate["quad"])
-        if warped is None:
-            self.get_logger().info("two_stage: warp failed")
-            return None
-
-        cls = self.classify_warped_face(warped)
-        if cls is None:
-            self.get_logger().info("two_stage: classification failed")
-            return None
-
-        x1, y1, x2, y2 = candidate["bbox"]
-
-        return {
-            "id": cls["id"],
-            "name": cls["name"],
-            "bbox": (x1, y1, x2, y2),
-            "center_x": int((x1 + x2) / 2),
-            "center_y": int((y1 + y2) / 2),
-            "num_inliers": cls["num_inliers"],
-            "score": cls["score"],
-            "warped": warped,
-        }
-
     def classify_warped_face(self, warped_rgb: np.ndarray) -> Optional[dict]:
         warped_gray = cv2.cvtColor(warped_rgb, cv2.COLOR_RGB2GRAY)
         kp_face, des_face = self.orb.detectAndCompute(warped_gray, None)
 
-        if des_face is None or len(kp_face) < 12:
+        if des_face is None or len(kp_face) < 25:
             return None
 
         best = None
         best_inliers = -1
-        second_best_inliers = -1
+        best_score = -1.0
+        second_best_score = -1.0
 
         for temp in self.templates:
+            if temp["des"] is None or len(temp["kp"]) < 25:
+                continue
+
             matches_knn = self.bf.knnMatch(temp["des"], des_face, k=2)
 
             good_matches = []
@@ -348,43 +211,53 @@ class HLInterfaceController(Node):
                 if len(pair) < 2:
                     continue
                 m, n = pair
-                if m.distance < 0.78 * n.distance:
+                if m.distance < 0.72 * n.distance:
                     good_matches.append(m)
 
-            if len(good_matches) < 8:
+            if len(good_matches) < 12:
                 continue
 
             src_pts = np.float32([temp["kp"][m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
             dst_pts = np.float32([kp_face[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
 
-            H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+            H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 4.0)
             if H is None or mask is None:
                 continue
 
             inliers = int(mask.sum())
-            if inliers < 6:
+            if inliers < 10:
                 continue
 
-            if inliers > best_inliers:
-                second_best_inliers = best_inliers
+            inlier_ratio = inliers / max(1, len(good_matches))
+            score = inliers + 8.0 * inlier_ratio
+
+            if score > best_score:
+                second_best_score = best_score
+                best_score = score
                 best_inliers = inliers
                 best = {
                     "id": temp["id"],
                     "name": temp["name"],
                     "num_inliers": inliers,
                     "good_matches": len(good_matches),
+                    "score": float(score),
+                    "inlier_ratio": float(inlier_ratio),
                 }
-            elif inliers > second_best_inliers:
-                second_best_inliers = inliers
+            elif score > second_best_score:
+                second_best_score = score
 
         if best is None:
             return None
 
-        # Ослабляем отрыв от второго места
-        if second_best_inliers >= 0 and best_inliers - second_best_inliers < 2:
+        if best["num_inliers"] < 10:
             return None
 
-        best["score"] = float(best["num_inliers"]) / max(1, best["good_matches"])
+        if best["inlier_ratio"] < 0.45:
+            return None
+
+        if second_best_score >= 0 and best_score - second_best_score < 3.0:
+            return None
+
         return best
 
     def warp_face_patch(self, quad: np.ndarray) -> Optional[np.ndarray]:
@@ -409,15 +282,6 @@ class HLInterfaceController(Node):
         return warped
 
     def detect_cube_face_candidate(self) -> Optional[dict]:
-        """
-        Ищет в кадре прямоугольную/квадратную грань, похожую на грань куба.
-        Возвращает:
-        {
-            "quad": np.ndarray shape (4,2),
-            "bbox": (x1, y1, x2, y2)
-        }
-        или None
-        """
         if self.latest_rgb is None:
             return None
 
@@ -425,24 +289,23 @@ class HLInterfaceController(Node):
         gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
 
-        edges = cv2.Canny(blur, 60, 160)
+        edges = cv2.Canny(blur, 70, 180)
         contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         h, w = gray.shape[:2]
         best = None
-        best_area = 0.0
+        best_score = -1.0
 
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if area < 1200:
+            if area < 2500:
                 continue
 
             peri = cv2.arcLength(cnt, True)
-            approx = cv2.approxPolyDP(cnt, 0.03 * peri, True)
+            approx = cv2.approxPolyDP(cnt, 0.025 * peri, True)
 
             if len(approx) != 4:
                 continue
-
             if not cv2.isContourConvex(approx):
                 continue
 
@@ -455,22 +318,44 @@ class HLInterfaceController(Node):
 
             bw = x2 - x1
             bh = y2 - y1
-
-            if bw < 30 or bh < 30:
+            if bw < 40 or bh < 40:
                 continue
 
-            # Отношение сторон: грань куба примерно квадратная
+            if bw > 0.75 * w or bh > 0.75 * h:
+                continue
+
             ratio = bw / max(1.0, bh)
-            if ratio < 0.6 or ratio > 1.6:
+            if ratio < 0.75 or ratio > 1.33:
                 continue
 
-            # Не берем почти весь кадр
-            if bw > 0.9 * w or bh > 0.9 * h:
+            # Проверка, что стороны не слишком перекошены
+            ordered = self.order_quad_points(pts)
+            tl, tr, br, bl = ordered
+
+            top = np.linalg.norm(tr - tl)
+            right = np.linalg.norm(br - tr)
+            bottom = np.linalg.norm(br - bl)
+            left = np.linalg.norm(bl - tl)
+
+            if min(top, right, bottom, left) < 25:
                 continue
 
-            # Берем самый большой правдоподобный четырехугольник
-            if area > best_area:
-                best_area = area
+            side_ratio_1 = top / max(1.0, bottom)
+            side_ratio_2 = left / max(1.0, right)
+
+            if side_ratio_1 < 0.6 or side_ratio_1 > 1.7:
+                continue
+            if side_ratio_2 < 0.6 or side_ratio_2 > 1.7:
+                continue
+
+            rectangularity = area / max(1.0, bw * bh)
+            if rectangularity < 0.65:
+                continue
+
+            score = area * rectangularity
+
+            if score > best_score:
+                best_score = score
                 best = {
                     "quad": pts,
                     "bbox": (x1, y1, x2, y2),
@@ -486,20 +371,257 @@ class HLInterfaceController(Node):
         msg.linear.x, msg.linear.y, msg.angular.z = float(vx), float(vy), float(wz)
         self.cmd_pub.publish(msg)
 
-    def get_found_object_id(self) -> Optional[int]:
-        if self.latest_rgb is None: return None
-        gray = cv2.cvtColor(self.latest_rgb, cv2.COLOR_RGB2GRAY)
-        _, des_frame = self.orb.detectAndCompute(gray, None)
-        if des_frame is None: return None
+    def detect_cube_face_candidates(self) -> List[dict]:
+        if self.latest_rgb is None:
+            return []
 
-        best_id, max_matches = None, 0
+        image = self.latest_rgb
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        h, w = gray.shape[:2]
+
+        roi_y0 = int(h * 0.10)
+        roi = gray[roi_y0:, :]
+
+        blur = cv2.GaussianBlur(roi, (5, 5), 0)
+        edges = cv2.Canny(blur, 50, 140)
+
+        kernel = np.ones((3, 3), np.uint8)
+        edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        candidates = []
+
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area < 250:
+                continue
+
+            hull = cv2.convexHull(cnt)
+            rect = cv2.minAreaRect(hull)
+            (_, _), (rw, rh), _ = rect
+
+            if min(rw, rh) < 18:
+                continue
+
+            aspect = max(rw, rh) / max(1.0, min(rw, rh))
+            if aspect > 2.4:
+                continue
+
+            box = cv2.boxPoints(rect).astype(np.float32)
+            box[:, 1] += roi_y0
+
+            xs = box[:, 0]
+            ys = box[:, 1]
+
+            x1 = int(np.clip(np.min(xs), 0, w - 1))
+            y1 = int(np.clip(np.min(ys), 0, h - 1))
+            x2 = int(np.clip(np.max(xs), 0, w - 1))
+            y2 = int(np.clip(np.max(ys), 0, h - 1))
+
+            bw = x2 - x1
+            bh = y2 - y1
+            if bw < 12 or bh < 12:
+                continue
+
+            rect_area = max(rw * rh, 1.0)
+            extent = float(area) / rect_area
+            if extent < 0.35:
+                continue
+
+            bbox = (x1, y1, x2, y2)
+            depth = self.get_depth_at_rgb_bbox_center(bbox)
+
+            if depth is not None:
+                if not (0.2 <= depth <= 5.0):
+                    continue
+
+                width_m, height_m = self.estimate_bbox_size_m(bbox, depth)
+
+                if width_m < 0.03 or height_m < 0.03:
+                    continue
+                if width_m > 1.2 or height_m > 1.2:
+                    continue
+            else:
+                width_m, height_m = None, None
+
+            lower_bonus = float((y1 + y2) * 0.5) / max(1.0, h)
+            compact_bonus = 1.0 / aspect
+            area_bonus = min(1.0, area / 4000.0)
+
+            geom_score = 0.35 * compact_bonus + 0.30 * extent + 0.20 * lower_bonus + 0.15 * area_bonus
+
+            candidates.append(
+                {
+                    "quad": box,
+                    "bbox": bbox,
+                    "depth": depth,
+                    "geom_score": float(geom_score),
+                    "extent": float(extent),
+                    "aspect": float(aspect),
+                    "width_m": width_m,
+                    "height_m": height_m,
+                }
+            )
+
+        candidates.sort(key=lambda c: c["geom_score"], reverse=True)
+        return candidates[:8]
+
+    def detect_cube_face_candidate(self) -> Optional[dict]:
+        candidates = self.detect_cube_face_candidates()
+        if not candidates:
+            return None
+        return candidates[0]
+
+    def classify_warped_face(self, warped_rgb: np.ndarray) -> Optional[dict]:
+        warped_gray = cv2.cvtColor(warped_rgb, cv2.COLOR_RGB2GRAY)
+        kp_face, des_face = self.orb.detectAndCompute(warped_gray, None)
+
+        if des_face is None or len(kp_face) < 14:
+            return None
+
+        best = None
+        best_inliers = -1
+        second_best_inliers = -1
+
         for temp in self.templates:
-            matches = self.bf.match(temp['des'], des_frame)
-            good = [m for m in matches if m.distance < 40]
-            if len(good) > 25 and len(good) > max_matches:
-                max_matches = len(good)
-                best_id = temp['id']
-        return best_id
+            matches_knn = self.bf.knnMatch(temp["des"], des_face, k=2)
+
+            good_matches = []
+            for pair in matches_knn:
+                if len(pair) < 2:
+                    continue
+                m, n = pair
+                if m.distance < 0.76 * n.distance:
+                    good_matches.append(m)
+
+            if len(good_matches) < 8:
+                continue
+
+            src_pts = np.float32([temp["kp"][m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+            dst_pts = np.float32([kp_face[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+
+            H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 4.0)
+            if H is None or mask is None:
+                continue
+
+            inliers = int(mask.sum())
+            if inliers < 6:
+                continue
+
+            if inliers > best_inliers:
+                second_best_inliers = best_inliers
+                best_inliers = inliers
+                best = {
+                    "id": temp["id"],
+                    "name": temp["name"],
+                    "num_inliers": inliers,
+                    "good_matches": len(good_matches),
+                }
+            elif inliers > second_best_inliers:
+                second_best_inliers = inliers
+
+        if best is None:
+            return None
+
+        if second_best_inliers >= 0 and best_inliers - second_best_inliers < 3:
+            return None
+
+        best["score"] = float(best["num_inliers"]) / max(1, best["good_matches"])
+        if best["score"] < 0.38:
+            return None
+
+        return best
+
+    def estimate_bbox_size_m(self, bbox: tuple, depth_m: float) -> tuple:
+        if self.latest_rgb is None:
+            return 999.0, 999.0
+
+        x1, y1, x2, y2 = bbox
+        rgb_h, rgb_w = self.latest_rgb.shape[:2]
+
+        bw = max(1.0, float(x2 - x1))
+        bh = max(1.0, float(y2 - y1))
+
+        hfov = math.radians(70.0)
+        vfov = 2.0 * math.atan((rgb_h / rgb_w) * math.tan(hfov / 2.0))
+
+        width_m = 2.0 * depth_m * math.tan(hfov / 2.0) * (bw / rgb_w)
+        height_m = 2.0 * depth_m * math.tan(vfov / 2.0) * (bh / rgb_h)
+
+        return width_m, height_m
+
+    def get_depth_at_rgb_bbox_center(self, bbox: tuple, window: int = 5) -> Optional[float]:
+        if self.latest_rgb is None or self.latest_depth is None:
+            return None
+
+        x1, y1, x2, y2 = bbox
+
+        rgb_h, rgb_w = self.latest_rgb.shape[:2]
+        depth_h, depth_w = self.latest_depth.shape[:2]
+
+        cx_rgb = int((x1 + x2) / 2)
+        cy_rgb = int((y1 + y2) / 2)
+
+        cx = int(cx_rgb * depth_w / max(1, rgb_w))
+        cy = int(cy_rgb * depth_h / max(1, rgb_h))
+
+        x_min = max(0, cx - window)
+        x_max = min(depth_w, cx + window + 1)
+        y_min = max(0, cy - window)
+        y_max = min(depth_h, cy + window + 1)
+
+        patch = self.latest_depth[y_min:y_max, x_min:x_max].astype(np.float32)
+        valid = patch[np.isfinite(patch)]
+        valid = valid[(valid > 0.15) & (valid < 8.0)]
+
+        if len(valid) == 0:
+            return None
+        return float(np.median(valid))
+
+    def detect_object(self) -> Optional[dict]:
+        candidates = self.detect_cube_face_candidates()
+        if not candidates:
+            return None
+
+        best_detection = None
+        best_total_score = -1e9
+
+        for cand in candidates:
+            warped = self.warp_face_patch(cand["quad"])
+            if warped is None:
+                continue
+
+            cls = self.classify_warped_face(warped)
+            if cls is None:
+                continue
+
+            x1, y1, x2, y2 = cand["bbox"]
+
+            total_score = (
+                    0.70 * float(cls["score"])
+                    + 0.20 * float(cand["geom_score"])
+                    + 0.10 * min(1.0, float(cls["num_inliers"]) / 15.0)
+            )
+
+            det = {
+                "id": cls["id"],
+                "name": cls["name"],
+                "bbox": (x1, y1, x2, y2),
+                "center_x": int((x1 + x2) / 2),
+                "center_y": int((y1 + y2) / 2),
+                "depth": cand["depth"],
+                "score": float(cls["score"]),
+                "num_inliers": int(cls["num_inliers"]),
+                "geom_score": float(cand["geom_score"]),
+                "total_score": float(total_score),
+            }
+
+            if total_score > best_total_score:
+                best_total_score = total_score
+                best_detection = det
+
+        return best_detection
 
     def get_laser_scan(self) -> Optional[np.ndarray]:
         if self.latest_depth is None: return None
@@ -547,7 +669,6 @@ class HLInterfaceController(Node):
             self.is_recovering = True
             self.recovery_end_time = now + 5.0
 
-
         if self.is_recovering:
             if now < self.recovery_end_time:
                 self.send_command(-1.5, 0.0, 2)
@@ -557,12 +678,10 @@ class HLInterfaceController(Node):
                 self.stuck_start_time = now
                 self.get_logger().info("Восстановление завершено, возвращаюсь к EXPLORE")
 
-        detection = self.detect_object_orb()
-        obj_depth = None
+        detection = self.detect_object()
+        obj_depth = detection["depth"] if detection is not None else None
 
         if detection is not None:
-            obj_depth = self.get_depth_at_bbox_center(detection["bbox"])
-
             leader = self.update_majority_vote(detection)
 
             if leader is not None:
