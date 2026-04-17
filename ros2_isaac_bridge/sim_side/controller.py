@@ -41,7 +41,17 @@ class HLInterfaceController(Node):
         self.stop_until_time = 0.0  # если > now, стоим
         self.approach_depth_threshold = 0.9  # считаем, что подошли вплотную
 
-        self.sequence_of_objects = [0, 1, 2, 3, 4]
+        self.near_stop_duration = 2.0
+        self.near_stop_depth_threshold = 0.5
+        self.near_stopped_object_ids = set()
+
+        self.sequence_of_objects = [
+            (4, "laptop"),
+            (3, "cup"),
+            (1, "bottle"),
+            (2, "chair"),
+            (0, "backpack"),
+        ]
         self.sequence_index = 0
 
         # ---------------- Cached state ----------------
@@ -80,7 +90,24 @@ class HLInterfaceController(Node):
     def get_expected_object_id(self) -> Optional[int]:
         if self.sequence_index >= len(self.sequence_of_objects):
             return None
-        return self.sequence_of_objects[self.sequence_index]
+
+        entry = self.sequence_of_objects[self.sequence_index]
+
+        if isinstance(entry, (tuple, list)):
+            return int(entry[0])
+
+        return int(entry)
+
+    def get_expected_object_name(self) -> Optional[str]:
+        if self.sequence_index >= len(self.sequence_of_objects):
+            return None
+
+        entry = self.sequence_of_objects[self.sequence_index]
+
+        if isinstance(entry, (tuple, list)) and len(entry) > 1:
+            return str(entry[1])
+
+        return None
 
     def publish_detected_object(self, object_id: int) -> None:
         msg = Int32()
@@ -691,22 +718,29 @@ class HLInterfaceController(Node):
                 )
 
                 expected_id = self.get_expected_object_id()
+                expected_name = self.get_expected_object_name()
 
-                if obj_depth is not None and obj_depth <= self.approach_depth_threshold and leader["count"] >= 5:
+                # Останавливаемся только на правильном объекте по порядку
+                if (
+                        expected_id is not None
+                        and leader["id"] == expected_id
+                        and obj_depth is not None
+                        and obj_depth <= self.near_stop_depth_threshold
+                        and leader["count"] >= 3
+                        and leader["id"] not in self.near_stopped_object_ids
+                ):
+                    self.near_stopped_object_ids.add(leader["id"])
+                    self.log_detected_object(leader["id"], leader["name"], now)
 
-                    if expected_id is not None and leader["id"] == expected_id:
-                        self.log_detected_object(leader["id"], leader["name"], now)
+                    self.stop_until_time = max(self.stop_until_time, now + self.near_stop_duration)
+                    self.sequence_index += 1
+                    self.class_history.clear()
 
-                        self.get_logger().info(
-                            f"SEQUENCE MATCHED | expected={expected_id} | found={leader['id']} | STOP 10 SEC"
-                        )
-
-                        self.sequence_index += 1
-                        self.stop_until_time = now + 10.0
-                        self.class_history.clear()
-
-                    else:
-                        self.log_detected_object(leader["id"], leader["name"], now)
+                    self.get_logger().info(
+                        f"SEQUENCE MATCHED | expected_id={expected_id} | expected_name={expected_name} | "
+                        f"found_id={leader['id']} | found_name={leader['name']} | "
+                        f"STOP {self.near_stop_duration:.1f} SEC"
+                    )
 
         if now < self.stop_until_time:
             self.send_command(0.0, 0.0, 0.0)
