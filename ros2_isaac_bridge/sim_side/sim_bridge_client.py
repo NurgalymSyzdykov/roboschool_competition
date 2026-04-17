@@ -5,7 +5,6 @@ import cv2
 import struct
 import numpy as np
 
-
 CMD_IP = "127.0.0.1"
 CMD_PORT = 5005
 
@@ -24,6 +23,10 @@ JOINT_STATE_PORT = 5009
 IMU_IP = "127.0.0.1"
 IMU_PORT = 5010
 
+DETECTED_IP = "127.0.0.1"
+DETECTED_PORT = 5011
+
+
 class SimBridgeClient:
     def __init__(self):
         self.latest_cmd = {
@@ -36,11 +39,15 @@ class SimBridgeClient:
         self.cmd_sock.bind((CMD_IP, CMD_PORT))
         self.cmd_sock.setblocking(False)
 
+        self.detected_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.detected_sock.bind((DETECTED_IP, DETECTED_PORT))
+        self.detected_sock.setblocking(False)
+
         self.state_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.rgb_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         # self.depth_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # UDP
-        self.depth_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM) # TCP
-        self.depth_sock.connect((DEPTH_IP, DEPTH_PORT)) # TCP
+        self.depth_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # TCP
+        self.depth_sock.connect((DEPTH_IP, DEPTH_PORT))  # TCP
         self.joint_state_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.imu_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
@@ -57,6 +64,16 @@ class SimBridgeClient:
             print(f"receive_cmd error: {e}")
 
         return self.latest_cmd.copy()
+
+    def receive_detected_object(self):
+        try:
+            data, _ = self.detected_sock.recvfrom(4096)
+            msg = json.loads(data.decode("utf-8"))
+            return int(msg.get("object_id"))
+        except BlockingIOError:
+            pass
+        except Exception as e:
+            print(f"receive_detected_object error: {e}")
 
     def send_state(self, vx, vy, wz):
         msg = {
