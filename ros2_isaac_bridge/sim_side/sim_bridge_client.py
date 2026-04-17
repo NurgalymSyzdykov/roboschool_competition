@@ -26,6 +26,9 @@ IMU_PORT = 5010
 DETECTED_IP = "127.0.0.1"
 DETECTED_PORT = 5011
 
+SEQUENCE_IP = "127.0.0.1"
+SEQUENCE_PORT = 5012
+
 
 class SimBridgeClient:
     def __init__(self):
@@ -45,11 +48,15 @@ class SimBridgeClient:
 
         self.state_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.rgb_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # self.depth_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # UDP
-        self.depth_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # TCP
-        self.depth_sock.connect((DEPTH_IP, DEPTH_PORT))  # TCP
+
+        self.depth_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.depth_sock.connect((DEPTH_IP, DEPTH_PORT))
+
         self.joint_state_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.imu_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+        # Новый сокет для sequence
+        self.sequence_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     def receive_cmd(self):
         try:
@@ -74,6 +81,19 @@ class SimBridgeClient:
             pass
         except Exception as e:
             print(f"receive_detected_object error: {e}")
+
+        return None
+
+    def send_sequence(self, sequence):
+        try:
+            payload = {
+                "sequence": [int(x) for x in sequence],
+                "timestamp": time.time(),
+            }
+            data = json.dumps(payload).encode("utf-8")
+            self.sequence_sock.sendto(data, (SEQUENCE_IP, SEQUENCE_PORT))
+        except Exception as e:
+            print(f"send_sequence error: {e}")
 
     def send_state(self, vx, vy, wz):
         msg = {
